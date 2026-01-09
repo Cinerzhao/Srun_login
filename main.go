@@ -45,12 +45,11 @@ func main() {
 	// 2. 准备密码
 	// URL 参数用: HMAC-MD5 (防重放)
 	hmd5 := hmacMd5(*password, token)
-	// Info 内部用: 纯 MD5 (身份验证) <--- 修正回 V3 逻辑
+	// Info 内部用: 纯 MD5 (身份验证)
 	pwdMd5 := md5Str(*password)
 
 	// 3. 构造 Info JSON
 	// 严格顺序: username -> password -> ip -> acid -> enc_ver
-	// 这里的 password 必须是纯 MD5
 	infoJSON := fmt.Sprintf(`{"username":"%s","password":"%s","ip":"%s","acid":"%s","enc_ver":"srun_bx1"}`,
 		*username, pwdMd5, ip, *acid)
 	
@@ -188,23 +187,29 @@ func xEncode(msg string, key string) string {
 	}
 	
 	byteData := l(v, false)
-	// 使用标准 Base64 编码 (根据F12数据确认)
 	return base64.StdEncoding.EncodeToString(byteData)
 }
 
+// s: 核心修复版 - 完美模拟 JS 的字符串 packing 行为
 func s(a string, b bool) []uint32 {
-	lenA := len(a)
-	var v []uint32
-	vLen := (lenA + 3) / 4
-	if b {
-		v = make([]uint32, vLen+1)
-		v[vLen] = uint32(lenA)
-	} else {
-		v = make([]uint32, vLen)
-	}
-	for i := 0; i < lenA; i++ {
+	n := len(a)
+	// 无论是否追加长度，至少需要 (n >> 2) + 1 个 uint32 来容纳数据（包括潜在的长度位）
+	// 例如: "abc" (3) -> 需要 1 个 uint32 (长度3写在第4字节)
+	// "abcd" (4) -> 需要 2 个 uint32 (长度4写在第5字节)
+	vLen := (n >> 2) + 1
+	v := make([]uint32, vLen)
+
+	for i := 0; i < n; i++ {
 		v[i>>2] |= uint32(a[i]) << ((i & 3) * 8)
 	}
+
+	if b {
+		// 关键修复：直接将长度 n 写入到字节流的下一个位置
+		// 如果 n=3, 写入 v[0] 的高8位
+		// 如果 n=4, 写入 v[1] 的低8位
+		v[n>>2] |= uint32(n) << ((n & 3) * 8)
+	}
+	
 	return v
 }
 
