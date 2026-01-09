@@ -45,20 +45,22 @@ func main() {
 	}
 	fmt.Printf("Token: %s, IP: %s\n", token, ip)
 
-	// 2. 密码加密逻辑 (V1.18 核心)
+	// 2. 密码加密逻辑
+	// V1.18: URL 和 Info 内部均使用 HMAC-MD5
 	hmd5 := hmacMd5(*password, token)
 
 	// 3. 构造 Info JSON
 	infoData := map[string]string{
 		"username": *username,
-		"password": hmd5,
+		"password": hmd5, // 这里的密码也是加密后的
 		"ip":       ip,
 		"acid":     *acid,
 		"enc_ver":  "srun_bx1",
 	}
 	infoJSON, _ := json.Marshal(infoData)
 	
-	// 4. 加密 Info (使用 sencode + 自定义 Base64)
+	// 4. 加密 Info (xEncode + Srun Base64)
+	// 格式固定为 {SRBX1} + 密文
 	info := "{SRBX1}" + xEncode(string(infoJSON), token)
 
 	// 5. 计算 chksum
@@ -108,7 +110,9 @@ func main() {
 	if strings.Contains(respStr, "\"error\":\"ok\"") {
 		fmt.Println("✅ Login Successful!")
 	} else {
-		fmt.Println("❌ Login Failed. Check parameters.")
+		// 如果依然失败，打印出加密后的 info 以便排查
+		fmt.Println("❌ Login Failed.")
+		// fmt.Println("Debug Info:", info) // 调试用
 	}
 }
 
@@ -225,25 +229,25 @@ func l(a []uint32, b bool) []byte {
 	return res
 }
 
-// base64Srun 修正版：安全处理数组越界，模拟 JS 行为
+// base64Srun [修正版 V2]
+// 完全移除填充逻辑，模拟 JS 行为：
+// 当索引超出范围时，JS charAt 返回空，即不拼接任何字符。
+// 绝对不使用 '=' 进行填充。
 func base64Srun(input []byte) string {
-	const pad = "="
 	alpha := srunAlphabet
 	alphaLen := len(alpha)
 	
 	var sb strings.Builder
-	// 预分配容量，避免多次内存分配
 	sb.Grow((len(input) + 2) / 3 * 4)
 
 	si := 0
 	n := (len(input) / 3) * 3
 	
-	// Helper closure to safe append
+	// 安全写入，模拟 JS 忽略越界
 	safeWrite := func(idx uint) {
 		if int(idx) < alphaLen {
 			sb.WriteByte(alpha[idx])
 		}
-		// 越界时不写入，模拟 JS 的 charAt 返回空字符串
 	}
 
 	for si < n {
@@ -270,10 +274,8 @@ func base64Srun(input []byte) string {
 
 	if remain == 2 {
 		safeWrite(val >> 6 & 0x3F)
-	} else {
-		sb.WriteByte(pad[0])
 	}
-	sb.WriteByte(pad[0])
+	// 注意：这里删除了所有的 else { append('=') } 逻辑
 	
 	return sb.String()
 }
