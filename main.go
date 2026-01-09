@@ -59,7 +59,7 @@ func main() {
 		"enc_ver":  "srun_bx1",
 	}
 	infoJSON, _ := json.Marshal(infoData)
-	
+
 	// 4. 加密 Info (使用 sencode + 自定义 Base64)
 	// 格式固定为 {SRBX1} + 密文
 	info := "{SRBX1}" + xEncode(string(infoJSON), token)
@@ -106,7 +106,7 @@ func main() {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	
+
 	respStr := string(body)
 	fmt.Println("Response:", respStr)
 
@@ -122,9 +122,9 @@ func main() {
 // getChallenge 获取 Token 和 IP
 func getChallenge(server, username string) (string, string) {
 	ts := time.Now().UnixNano() / 1e6
-	u := fmt.Sprintf("http://%s/cgi-bin/get_challenge?callback=jQuery%d&username=%s&ip=0.0.0.0&_=%d", 
+	u := fmt.Sprintf("http://%s/cgi-bin/get_challenge?callback=jQuery%d&username=%s&ip=0.0.0.0&_=%d",
 		server, ts, username, ts)
-	
+
 	resp, err := http.Get(u)
 	if err != nil {
 		return "", ""
@@ -183,20 +183,23 @@ func xEncode(msg string, key string) string {
 
 	for q > 0 {
 		sum += delta
-		e := (sum >> 2) & 3
+		// 修复：强制转换 sum>>2 为 int，以便与 int 类型的 p 进行异或
+		e := int((sum >> 2) & 3)
 		for p := 0; p < n; p++ {
 			y = v[p+1]
-			mx := (z>>5^y<<2) + (y>>3^z<<4) ^ (sum^y) + (k[p&3^e]^z)
+			// p 是 int, e 是 int, k 的索引需要 int。
+			// 运算优先级：k[(p&3)^e]
+			mx := (z>>5^y<<2) + (y>>3^z<<4) ^ (sum^y) + (k[(p&3)^e]^z)
 			v[p] += mx
 			z = v[p]
 		}
 		y = v[0]
-		mx := (z>>5^y<<2) + (y>>3^z<<4) ^ (sum^y) + (k[n&3^e]^z)
+		mx := (z>>5^y<<2) + (y>>3^z<<4) ^ (sum^y) + (k[(n&3)^e]^z)
 		v[n] += mx
 		z = v[n]
 		q--
 	}
-	
+
 	// 转回字节并进行自定义 Base64 编码
 	return base64Srun(l(v, false))
 }
@@ -213,7 +216,7 @@ func s(a string, b bool) []uint32 {
 	} else {
 		v = make([]uint32, vLen)
 	}
-	
+
 	for i := 0; i < lenA; i++ {
 		v[i>>2] |= uint32(a[i]) << ((i & 3) * 8)
 	}
@@ -231,7 +234,7 @@ func l(a []uint32, b bool) []byte {
 		}
 		lenV = int(m)
 	}
-	
+
 	res := make([]byte, lenV)
 	for i := 0; i < lenV; i++ {
 		res[i] = byte(a[i>>2] >> ((i & 3) * 8) & 0xff)
@@ -244,10 +247,10 @@ func base64Srun(input []byte) string {
 	const pad = "="
 	src := input
 	dst := make([]byte, (len(src)+2)/3*4)
-	
+
 	// 映射表
 	alpha := srunAlphabet
-	
+
 	di, si := 0, 0
 	n := (len(src) / 3) * 3
 	for si < n {
@@ -279,6 +282,6 @@ func base64Srun(input []byte) string {
 		dst[di+2] = pad[0]
 	}
 	dst[di+3] = pad[0]
-	
+
 	return string(dst)
 }
