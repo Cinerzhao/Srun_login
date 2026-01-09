@@ -15,18 +15,26 @@ jobs:
         with:
           go-version: '1.20'
 
-      - name: Build Srun Tool
+      # 1. 编译 Windows 版 (给电脑测试用)
+      - name: Build for Windows
         run: |
-          # 1. 设置编译目标为 K2P 的架构
+          export GOOS=windows
+          export GOARCH=amd64
+          go build -ldflags "-s -w" -o srun_login.exe main.go
+
+      # 2. 编译 K2P 版 (给路由器用)
+      - name: Build for K2P Router
+        run: |
           export GOOS=linux
           export GOARCH=mipsle
           export GOMIPS=softfloat
-          
-          # 2. 编译当前目录下的 main.go
-          go build -ldflags "-s -w" -o srun_login main.go
-          
-      - name: Upload Artifact
+          go build -ldflags "-s -w" -o srun_login_k2p main.go
+
+      # 3. 把两个文件打包上传
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: srun_login_k2p
-          path: srun_login
+          name: srun_tools
+          path: |
+            srun_login.exe
+            srun_login_k2p
