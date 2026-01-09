@@ -25,7 +25,7 @@ var (
 	acid     = flag.String("ac", "23", "AC ID")
 )
 
-// 深澜专用 Base64 字典 (长度 62)
+// 深澜专用 Base64 字典
 const srunAlphabet = "LVoJPiCN2R8G90yg+hmFzDj6S5E4Wl1eMMcXkT7u_nApqrbsB3IdhkaQZtxEwY"
 
 func main() {
@@ -37,7 +37,7 @@ func main() {
 
 	fmt.Printf("Target: %s (AC_ID: %s)\n", *server, *acid)
 
-	// 1. 获取 Token (Challenge)
+	// 1. 获取 Token
 	token, ip := getChallenge(*server, *username)
 	if token == "" {
 		fmt.Println("Fatal: Failed to get token.")
@@ -45,29 +45,33 @@ func main() {
 	}
 	fmt.Printf("Token: %s, IP: %s\n", token, ip)
 
-	// 2. 密码加密逻辑
-	// V1.18: URL 和 Info 内部均使用 HMAC-MD5
+	// 2. 准备加密参数
+	// URL 参数用 HMAC-MD5 (带 Token)
 	hmd5 := hmacMd5(*password, token)
+	// Info 内部用 纯 MD5 (不带 Token) <--- 关键修正
+	pwdMd5 := md5Str(*password)
 
 	// 3. 构造 Info JSON
 	infoData := map[string]string{
 		"username": *username,
-		"password": hmd5, // 这里的密码也是加密后的
+		"password": pwdMd5, // 使用纯 MD5
 		"ip":       ip,
 		"acid":     *acid,
 		"enc_ver":  "srun_bx1",
 	}
 	infoJSON, _ := json.Marshal(infoData)
-	
-	// 4. 加密 Info (xEncode + Srun Base64)
-	// 格式固定为 {SRBX1} + 密文
+	fmt.Println("Info JSON (Raw):", string(infoJSON)) // 调试打印
+
+	// 4. 加密 Info
+	// 格式: {SRBX1} + xEncode + Base64(无padding)
 	info := "{SRBX1}" + xEncode(string(infoJSON), token)
 
-	// 5. 计算 chksum
+	// 5. 计算 Checksum
+	// 顺序: token + username + token + hmd5 + token + acid + token + ip + token + n + token + type + token + info
 	chkStr := token + *username + token + hmd5 + token + *acid + token + ip + token + "200" + token + "1" + token + info
 	chksum := sha1Str(chkStr)
 
-	// 6. 构造请求
+	// 6. 构造 URL
 	loginUrl := fmt.Sprintf("http://%s/cgi-bin/srun_portal", *server)
 	timestamp := time.Now().UnixNano() / 1e6
 	callback := fmt.Sprintf("jQuery%d_%d", timestamp, timestamp-500)
@@ -91,7 +95,7 @@ func main() {
 	fullUrl := loginUrl + "?" + params.Encode()
 	fmt.Println("Sending login request...")
 
-	// 7. 发送
+	// 7. 发送请求
 	client := &http.Client{Timeout: 5 * time.Second}
 	req, _ := http.NewRequest("GET", fullUrl, nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -110,13 +114,11 @@ func main() {
 	if strings.Contains(respStr, "\"error\":\"ok\"") {
 		fmt.Println("✅ Login Successful!")
 	} else {
-		// 如果依然失败，打印出加密后的 info 以便排查
 		fmt.Println("❌ Login Failed.")
-		// fmt.Println("Debug Info:", info) // 调试用
 	}
 }
 
-// ================== 核心加密算法实现 ==================
+// ================== 核心算法 ==================
 
 func getChallenge(server, username string) (string, string) {
 	ts := time.Now().UnixNano() / 1e6
@@ -133,7 +135,6 @@ func getChallenge(server, username string) (string, string) {
 
 	reToken := regexp.MustCompile(`"challenge":"(.*?)"`)
 	reIp := regexp.MustCompile(`"client_ip":"(.*?)"`)
-
 	tokenMatch := reToken.FindStringSubmatch(content)
 	ipMatch := reIp.FindStringSubmatch(content)
 
@@ -149,6 +150,13 @@ func hmacMd5(password, token string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// 新增: 纯 MD5 计算
+func md5Str(s string) string {
+	h := md5.New()
+	h.Write([]byte(s))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 func sha1Str(s string) string {
 	h := sha1.New()
 	h.Write([]byte(s))
@@ -156,9 +164,7 @@ func sha1Str(s string) string {
 }
 
 func xEncode(msg string, key string) string {
-	if msg == "" {
-		return ""
-	}
+	if msg == "" { return "" }
 	v := s(msg, true)
 	k := s(key, false)
 
@@ -190,7 +196,6 @@ func xEncode(msg string, key string) string {
 		z = v[n]
 		q--
 	}
-	
 	return base64Srun(l(v, false))
 }
 
@@ -204,7 +209,6 @@ func s(a string, b bool) []uint32 {
 	} else {
 		v = make([]uint32, vLen)
 	}
-	
 	for i := 0; i < lenA; i++ {
 		v[i>>2] |= uint32(a[i]) << ((i & 3) * 8)
 	}
@@ -216,12 +220,9 @@ func l(a []uint32, b bool) []byte {
 	lenV := lenA << 2
 	if b {
 		m := a[lenA-1]
-		if int(m) < lenV-3 || int(m) > lenV {
-			return nil
-		}
+		if int(m) < lenV-3 || int(m) > lenV { return nil }
 		lenV = int(m)
 	}
-	
 	res := make([]byte, lenV)
 	for i := 0; i < lenV; i++ {
 		res[i] = byte(a[i>>2] >> ((i & 3) * 8) & 0xff)
@@ -229,25 +230,17 @@ func l(a []uint32, b bool) []byte {
 	return res
 }
 
-// base64Srun [修正版 V2]
-// 完全移除填充逻辑，模拟 JS 行为：
-// 当索引超出范围时，JS charAt 返回空，即不拼接任何字符。
-// 绝对不使用 '=' 进行填充。
+// 经过修复的 Base64: 无Padding, 忽略越界
 func base64Srun(input []byte) string {
 	alpha := srunAlphabet
 	alphaLen := len(alpha)
-	
 	var sb strings.Builder
 	sb.Grow((len(input) + 2) / 3 * 4)
 
 	si := 0
 	n := (len(input) / 3) * 3
-	
-	// 安全写入，模拟 JS 忽略越界
 	safeWrite := func(idx uint) {
-		if int(idx) < alphaLen {
-			sb.WriteByte(alpha[idx])
-		}
+		if int(idx) < alphaLen { sb.WriteByte(alpha[idx]) }
 	}
 
 	for si < n {
@@ -258,24 +251,15 @@ func base64Srun(input []byte) string {
 		safeWrite(val & 0x3F)
 		si += 3
 	}
-
 	remain := len(input) - si
-	if remain == 0 {
-		return sb.String()
-	}
+	if remain == 0 { return sb.String() }
 
 	val := uint(input[si+0]) << 16
-	if remain == 2 {
-		val |= uint(input[si+1]) << 8
-	}
+	if remain == 2 { val |= uint(input[si+1]) << 8 }
 
 	safeWrite(val >> 18 & 0x3F)
 	safeWrite(val >> 12 & 0x3F)
-
-	if remain == 2 {
-		safeWrite(val >> 6 & 0x3F)
-	}
-	// 注意：这里删除了所有的 else { append('=') } 逻辑
+	if remain == 2 { safeWrite(val >> 6 & 0x3F) }
 	
 	return sb.String()
 }
