@@ -5,16 +5,12 @@ import (
 	"crypto/md5"
 	"crypto/sha1"
 	"encoding/hex"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"regexp"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -40,16 +36,17 @@ func main() {
 	fmt.Printf("Token: %s, IP: %s\n", token, ip)
 
 	// 2. Encrypt Password (HmacMD5)
-	hmd5 := hmacMd5(*password, token)
+	// 注意：这里要把 *password (指针) 转为字符串传进去
+	hmd5 := hmacMd5(token, *password)
 
 	// 3. Generate Info (XEncode)
+	// 手动拼接 JSON 字符串，避免引入 encoding/json 包导致未使用报错
 	infoJSON := fmt.Sprintf(`{"username":"%s","password":"%s","ip":"%s","acid":"%s","enc_ver":"srun_bx1"}`,
-		*username, *password, ip, "1", // ac_id 默认为1，如失败可尝试23
-	)
+		*username, *password, ip, "1")
+	
 	info := "{SRBX1}" + xEncode(infoJSON, token)
 
 	// 4. Calculate Checksum (SHA1)
-	// SHA1(token + username + token + hmd5 + token + acid + token + ip + token + n + token + type + token + info)
 	chkStr := token + *username + token + hmd5 + token + "1" + token + ip + token + "200" + token + "1" + token + info
 	chksum := sha1Str(chkStr)
 
@@ -59,7 +56,7 @@ func main() {
 	params.Set("action", "login")
 	params.Set("username", *username)
 	params.Set("password", "{MD5}"+hmd5)
-	params.Set("ac_id", "1") // ac_id
+	params.Set("ac_id", "1")
 	params.Set("ip", ip)
 	params.Set("chksum", chksum)
 	params.Set("info", info)
@@ -70,6 +67,8 @@ func main() {
 	params.Set("double_stack", "0")
 
 	fullUrl := loginUrl + "?" + params.Encode()
+	fmt.Println("Sending request...")
+	
 	resp, err := http.Get(fullUrl)
 	if err != nil {
 		fmt.Println("Login failed:", err)
@@ -83,7 +82,6 @@ func main() {
 // === Helper Functions ===
 
 func getChallenge(host, user string) (string, string) {
-	// 获取 Token
 	u := fmt.Sprintf("http://%s/cgi-bin/get_challenge?callback=jsonp&username=%s&ip=0.0.0.0&_=%d",
 		host, user, time.Now().UnixNano()/1e6)
 	resp, err := http.Get(u)
@@ -94,7 +92,6 @@ func getChallenge(host, user string) (string, string) {
 	body, _ := io.ReadAll(resp.Body)
 	s := string(body)
 	
-	// 正则提取
 	reToken := regexp.MustCompile(`"challenge":"(.*?)"`)
 	reIP := regexp.MustCompile(`"client_ip":"(.*?)"`)
 	
@@ -107,14 +104,10 @@ func getChallenge(host, user string) (string, string) {
 	return "", ""
 }
 
-func hmacMd5(key, data string) string {
-	h := hmac.New(md5.New, []byte(key)) // 注意：Srun 有时反过来，视版本而定，通常 password 是 data
-	// 标准 Srun: hmac(password, token) 
-	// 但很多实现是 hmac(token, password) 或者直接 MD5。
-	// 这里使用最通用的兼容逻辑: MD5(token + password) 实际上 Srun 很多时候用的是 HmacMD5(token, password) 
-	// 修正：Srun 标准是 hmac_md5(token, password)
-	h = hmac.New(md5.New, []byte(token))
-	h.Write([]byte(password)) // 这里实际上可能要改，如果报错请告诉我
+// 修复：明确参数名，不依赖全局变量
+func hmacMd5(tokenStr, passwordStr string) string {
+	h := hmac.New(md5.New, []byte(tokenStr))
+	h.Write([]byte(passwordStr))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -124,7 +117,6 @@ func sha1Str(s string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// srun_bx1 加密算法 (XEncode)
 func xEncode(msg, key string) string {
 	if msg == "" {
 		return ""
@@ -133,7 +125,7 @@ func xEncode(msg, key string) string {
 	pwdk := sencode(key, false)
 	
 	if len(pwdk) < 4 {
-		pwdk = make([]int64, 4) // padding
+		pwdk = make([]int64, 4)
 	}
 	
 	n := len(pwd) - 1
@@ -162,7 +154,6 @@ func xEncode(msg, key string) string {
 		q--
 	}
 	
-	// Convert back to bytes
 	l := len(pwd) * 4
 	res := make([]byte, l)
 	for i := 0; i < len(pwd); i++ {
@@ -171,9 +162,7 @@ func xEncode(msg, key string) string {
 		res[i*4+2] = byte((pwd[i] >> 16) & 0xFF)
 		res[i*4+3] = byte((pwd[i] >> 24) & 0xFF)
 	}
-	
-	// Base64 custom mapping usually not needed for standard base64 but srun uses standard + padding
-	return _base64(res[0:l]) // Simplified length handling
+	return _base64(res[0:l])
 }
 
 func sencode(a string, b bool) []int64 {
@@ -193,8 +182,6 @@ func sencode(a string, b bool) []int64 {
 	return v
 }
 
-// Custom Base64 map for Srun might be standard "LVO..." but usually it's standard URL safe.
-// Assuming standard Base64 for now.
 func _base64(input []byte) string {
 	const encode = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 	result := make([]byte, 0)
