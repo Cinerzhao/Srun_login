@@ -8,9 +8,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"time"
 )
 
@@ -18,8 +20,7 @@ var (
 	username = flag.String("u", "", "Username")
 	password = flag.String("p", "", "Password")
 	server   = flag.String("s", "", "Server IP")
-	// 新增 ac_id 参数，默认为 23 (根据你的抓包结果)
-	acid     = flag.String("ac", "23", "AC ID")
+	acid     = flag.String("ac", "23", "AC ID") // 默认为 23
 )
 
 func main() {
@@ -37,28 +38,31 @@ func main() {
 	}
 	fmt.Printf("Token: %s, IP: %s\n", token, ip)
 
-	// 2. Encrypt Password (HmacMD5)
+	// 2. Encrypt Password
 	hmd5 := hmacMd5(token, *password)
 
-	// 3. Generate Info (XEncode)
-	// 修正：使用 flag 传入的 ac_id (23)
+	// 3. Generate Info
 	infoJSON := fmt.Sprintf(`{"username":"%s","password":"%s","ip":"%s","acid":"%s","enc_ver":"srun_bx1"}`,
 		*username, *password, ip, *acid)
-	
 	info := "{SRBX1}" + xEncode(infoJSON, token)
 
-	// 4. Calculate Checksum (SHA1)
-	// 修正：这里拼接字符串时，ac_id 必须与上面保持一致，否则 checksum 校验失败
+	// 4. Calculate Checksum
 	chkStr := token + *username + token + hmd5 + token + *acid + token + ip + token + "200" + token + "1" + token + info
 	chksum := sha1Str(chkStr)
 
 	// 5. Send Login Request
 	loginUrl := fmt.Sprintf("http://%s/cgi-bin/srun_portal", *server)
+	
+	// 生成一个伪造的 callback 名称 (比如 jQuery123456...)
+	timestamp := time.Now().UnixNano() / 1e6
+	callback := "jQuery" + strconv.FormatInt(timestamp, 10) + "_" + strconv.FormatInt(timestamp-500, 10)
+
 	params := url.Values{}
+	params.Set("callback", callback) // [关键] 加上 callback
 	params.Set("action", "login")
 	params.Set("username", *username)
 	params.Set("password", "{MD5}"+hmd5)
-	params.Set("ac_id", *acid) // 修正：使用 23
+	params.Set("ac_id", *acid)
 	params.Set("ip", ip)
 	params.Set("chksum", chksum)
 	params.Set("info", info)
@@ -67,26 +71,47 @@ func main() {
 	params.Set("os", "Windows 10")
 	params.Set("name", "Windows")
 	params.Set("double_stack", "0")
+	params.Set("_", strconv.FormatInt(timestamp, 10)) // [关键] 加上时间戳
 
 	fullUrl := loginUrl + "?" + params.Encode()
 	fmt.Println("Sending request...")
+
+	// [关键] 使用 http.NewRequest 以便设置 User-Agent
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", fullUrl, nil)
+	if err != nil {
+		fmt.Println("Request error:", err)
+		return
+	}
+
+	// 伪装成 Chrome 浏览器
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 	
-	resp, err := http.Get(fullUrl)
+	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Println("Login failed:", err)
 		return
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
+	
+	// 输出结果
 	fmt.Println("Response:", string(body))
 }
 
 // === Helper Functions ===
 
 func getChallenge(host, user string) (string, string) {
+	// 也给 get_challenge 加上伪装
+	timestamp := time.Now().UnixNano() / 1e6
 	u := fmt.Sprintf("http://%s/cgi-bin/get_challenge?callback=jsonp&username=%s&ip=0.0.0.0&_=%d",
-		host, user, time.Now().UnixNano()/1e6)
-	resp, err := http.Get(u)
+		host, user, timestamp)
+	
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", u, nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", ""
 	}
