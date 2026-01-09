@@ -25,7 +25,7 @@ var (
 	acid     = flag.String("ac", "23", "AC ID")
 )
 
-// 深澜专用 Base64 字典
+// 深澜专用 Base64 字典 (长度 62)
 const srunAlphabet = "LVoJPiCN2R8G90yg+hmFzDj6S5E4Wl1eMMcXkT7u_nApqrbsB3IdhkaQZtxEwY"
 
 func main() {
@@ -46,11 +46,9 @@ func main() {
 	fmt.Printf("Token: %s, IP: %s\n", token, ip)
 
 	// 2. 密码加密逻辑 (V1.18 核心)
-	// URL 和 Info 内部都使用 HMAC-MD5
 	hmd5 := hmacMd5(*password, token)
 
 	// 3. 构造 Info JSON
-	// 关键：password 字段使用 hmd5，而不是纯 md5
 	infoData := map[string]string{
 		"username": *username,
 		"password": hmd5,
@@ -59,13 +57,11 @@ func main() {
 		"enc_ver":  "srun_bx1",
 	}
 	infoJSON, _ := json.Marshal(infoData)
-
+	
 	// 4. 加密 Info (使用 sencode + 自定义 Base64)
-	// 格式固定为 {SRBX1} + 密文
 	info := "{SRBX1}" + xEncode(string(infoJSON), token)
 
 	// 5. 计算 chksum
-	// 拼接顺序严格：token + username + token + hmd5 + token + acid + token + ip + token + n + token + type + token + info
 	chkStr := token + *username + token + hmd5 + token + *acid + token + ip + token + "200" + token + "1" + token + info
 	chksum := sha1Str(chkStr)
 
@@ -78,7 +74,7 @@ func main() {
 	params.Set("callback", callback)
 	params.Set("action", "login")
 	params.Set("username", *username)
-	params.Set("password", "{MD5}"+hmd5) // URL 中需要 {MD5} 前缀
+	params.Set("password", "{MD5}"+hmd5)
 	params.Set("ac_id", *acid)
 	params.Set("ip", ip)
 	params.Set("chksum", chksum)
@@ -96,9 +92,8 @@ func main() {
 	// 7. 发送
 	client := &http.Client{Timeout: 5 * time.Second}
 	req, _ := http.NewRequest("GET", fullUrl, nil)
-	// 伪造 UA 非常重要
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-
+	
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("Network Error: %v\n", err)
@@ -106,7 +101,7 @@ func main() {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-
+	
 	respStr := string(body)
 	fmt.Println("Response:", respStr)
 
@@ -119,12 +114,11 @@ func main() {
 
 // ================== 核心加密算法实现 ==================
 
-// getChallenge 获取 Token 和 IP
 func getChallenge(server, username string) (string, string) {
 	ts := time.Now().UnixNano() / 1e6
-	u := fmt.Sprintf("http://%s/cgi-bin/get_challenge?callback=jQuery%d&username=%s&ip=0.0.0.0&_=%d",
+	u := fmt.Sprintf("http://%s/cgi-bin/get_challenge?callback=jQuery%d&username=%s&ip=0.0.0.0&_=%d", 
 		server, ts, username, ts)
-
+	
 	resp, err := http.Get(u)
 	if err != nil {
 		return "", ""
@@ -133,7 +127,6 @@ func getChallenge(server, username string) (string, string) {
 	body, _ := io.ReadAll(resp.Body)
 	content := string(body)
 
-	// 正则提取 "challenge":"xxx" 和 "client_ip":"xxx"
 	reToken := regexp.MustCompile(`"challenge":"(.*?)"`)
 	reIp := regexp.MustCompile(`"client_ip":"(.*?)"`)
 
@@ -146,21 +139,18 @@ func getChallenge(server, username string) (string, string) {
 	return "", ""
 }
 
-// hmacMd5 计算 HMAC-MD5
 func hmacMd5(password, token string) string {
 	h := hmac.New(md5.New, []byte(token))
 	h.Write([]byte(password))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// sha1Str 计算 SHA1
 func sha1Str(s string) string {
 	h := sha1.New()
 	h.Write([]byte(s))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// xEncode 深澜核心加密函数 (对应 JS 中的 xEncode)
 func xEncode(msg string, key string) string {
 	if msg == "" {
 		return ""
@@ -183,12 +173,9 @@ func xEncode(msg string, key string) string {
 
 	for q > 0 {
 		sum += delta
-		// 修复：强制转换 sum>>2 为 int，以便与 int 类型的 p 进行异或
 		e := int((sum >> 2) & 3)
 		for p := 0; p < n; p++ {
 			y = v[p+1]
-			// p 是 int, e 是 int, k 的索引需要 int。
-			// 运算优先级：k[(p&3)^e]
 			mx := (z>>5^y<<2) + (y>>3^z<<4) ^ (sum^y) + (k[(p&3)^e]^z)
 			v[p] += mx
 			z = v[p]
@@ -199,31 +186,27 @@ func xEncode(msg string, key string) string {
 		z = v[n]
 		q--
 	}
-
-	// 转回字节并进行自定义 Base64 编码
+	
 	return base64Srun(l(v, false))
 }
 
-// s 字符串转 uint32 数组 (Helper for xEncode)
 func s(a string, b bool) []uint32 {
 	lenA := len(a)
 	var v []uint32
-	// 初始长度估算
 	vLen := (lenA + 3) / 4
 	if b {
-		v = make([]uint32, vLen+1) // 如果是 message，末尾多一位存长度
+		v = make([]uint32, vLen+1)
 		v[vLen] = uint32(lenA)
 	} else {
 		v = make([]uint32, vLen)
 	}
-
+	
 	for i := 0; i < lenA; i++ {
 		v[i>>2] |= uint32(a[i]) << ((i & 3) * 8)
 	}
 	return v
 }
 
-// l uint32 数组转字节数组 (Helper for xEncode)
 func l(a []uint32, b bool) []byte {
 	lenA := len(a)
 	lenV := lenA << 2
@@ -234,7 +217,7 @@ func l(a []uint32, b bool) []byte {
 		}
 		lenV = int(m)
 	}
-
+	
 	res := make([]byte, lenV)
 	for i := 0; i < lenV; i++ {
 		res[i] = byte(a[i>>2] >> ((i & 3) * 8) & 0xff)
@@ -242,46 +225,55 @@ func l(a []uint32, b bool) []byte {
 	return res
 }
 
-// base64Srun 深澜自定义 Base64 编码
+// base64Srun 修正版：安全处理数组越界，模拟 JS 行为
 func base64Srun(input []byte) string {
 	const pad = "="
-	src := input
-	dst := make([]byte, (len(src)+2)/3*4)
-
-	// 映射表
 	alpha := srunAlphabet
+	alphaLen := len(alpha)
+	
+	var sb strings.Builder
+	// 预分配容量，避免多次内存分配
+	sb.Grow((len(input) + 2) / 3 * 4)
 
-	di, si := 0, 0
-	n := (len(src) / 3) * 3
+	si := 0
+	n := (len(input) / 3) * 3
+	
+	// Helper closure to safe append
+	safeWrite := func(idx uint) {
+		if int(idx) < alphaLen {
+			sb.WriteByte(alpha[idx])
+		}
+		// 越界时不写入，模拟 JS 的 charAt 返回空字符串
+	}
+
 	for si < n {
-		val := uint(src[si+0])<<16 | uint(src[si+1])<<8 | uint(src[si+2])
-		dst[di+0] = alpha[val>>18&0x3F]
-		dst[di+1] = alpha[val>>12&0x3F]
-		dst[di+2] = alpha[val>>6&0x3F]
-		dst[di+3] = alpha[val&0x3F]
+		val := uint(input[si+0])<<16 | uint(input[si+1])<<8 | uint(input[si+2])
+		safeWrite(val >> 18 & 0x3F)
+		safeWrite(val >> 12 & 0x3F)
+		safeWrite(val >> 6 & 0x3F)
+		safeWrite(val & 0x3F)
 		si += 3
-		di += 4
 	}
 
-	remain := len(src) - si
+	remain := len(input) - si
 	if remain == 0 {
-		return string(dst)
+		return sb.String()
 	}
 
-	val := uint(src[si+0]) << 16
+	val := uint(input[si+0]) << 16
 	if remain == 2 {
-		val |= uint(src[si+1]) << 8
+		val |= uint(input[si+1]) << 8
 	}
 
-	dst[di+0] = alpha[val>>18&0x3F]
-	dst[di+1] = alpha[val>>12&0x3F]
+	safeWrite(val >> 18 & 0x3F)
+	safeWrite(val >> 12 & 0x3F)
 
 	if remain == 2 {
-		dst[di+2] = alpha[val>>6&0x3F]
+		safeWrite(val >> 6 & 0x3F)
 	} else {
-		dst[di+2] = pad[0]
+		sb.WriteByte(pad[0])
 	}
-	dst[di+3] = pad[0]
-
-	return string(dst)
+	sb.WriteByte(pad[0])
+	
+	return sb.String()
 }
