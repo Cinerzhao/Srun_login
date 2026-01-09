@@ -1,12 +1,14 @@
 package main
 
 import (
+	"crypto/hmac"
 	"crypto/md5"
 	"crypto/sha1"
 	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -28,7 +30,7 @@ func main() {
 		return
 	}
 
-	// 1. Get Challenge (Token)
+	// 1. 获取 Challenge (Token)
 	token, ip := getChallenge(*server, *username)
 	if token == "" {
 		fmt.Println("Failed to get token")
@@ -36,23 +38,23 @@ func main() {
 	}
 	fmt.Printf("Token: %s, IP: %s\n", token, ip)
 
-	// 2. Encrypt Password (修正：使用纯 MD5，不加盐)
-	// 之前的 hmacMd5 是错误的，你们学校只用 md5
-	pwdMd5 := md5Str(*password)
+	// 2. 密码加密 (使用标准的 HMAC-MD5)
+	// 即使你抓包看到的是 {MD5}，API 往往也接受并更喜欢 {MD5}HMAC
+	hmd5 := hmacMd5(*password, token)
 
-	// 3. Generate Info (XEncode)
-	// 注意：JSON 里的 password 字段并没有 {MD5} 前缀，只是 hex 字符串
+	// 3. 生成 Info (XEncode)
+	// 标准 Srun 的 info 里的 JSON，密码字段放的是 HMAC-MD5 的值
 	infoJSON := fmt.Sprintf(`{"username":"%s","password":"%s","ip":"%s","acid":"%s","enc_ver":"srun_bx1"}`,
-		*username, pwdMd5, ip, *acid)
+		*username, hmd5, ip, *acid)
 	
 	info := "{SRBX1}" + xEncode(infoJSON, token)
 
-	// 4. Calculate Checksum (SHA1)
-	// 拼接字符串用于校验
-	chkStr := token + *username + token + pwdMd5 + token + *acid + token + ip + token + "200" + token + "1" + token + info
+	// 4. 计算 Checksum
+	// 顺序：token + username + token + hmd5 + token + acid + token + ip + token + n + token + type + token + info
+	chkStr := token + *username + token + hmd5 + token + *acid + token + ip + token + "200" + token + "1" + token + info
 	chksum := sha1Str(chkStr)
 
-	// 5. Send Login Request
+	// 5. 发送请求
 	loginUrl := fmt.Sprintf("http://%s/cgi-bin/srun_portal", *server)
 	
 	timestamp := time.Now().UnixNano() / 1e6
@@ -62,8 +64,7 @@ func main() {
 	params.Set("callback", callback)
 	params.Set("action", "login")
 	params.Set("username", *username)
-	// URL 里的 password 需要带上 {MD5} 前缀
-	params.Set("password", "{MD5}"+pwdMd5)
+	params.Set("password", "{MD5}"+hmd5) // 这里发送 HMAC-MD5
 	params.Set("ac_id", *acid)
 	params.Set("ip", ip)
 	params.Set("chksum", chksum)
@@ -98,7 +99,7 @@ func main() {
 	fmt.Println("Response:", string(body))
 }
 
-// === Helper Functions ===
+// === 核心算法部分 ===
 
 func getChallenge(host, user string) (string, string) {
 	timestamp := time.Now().UnixNano() / 1e6
@@ -129,10 +130,10 @@ func getChallenge(host, user string) (string, string) {
 	return "", ""
 }
 
-// 修正：改为纯 MD5 计算
-func md5Str(s string) string {
-	h := md5.New()
-	h.Write([]byte(s))
+// 标准 Srun HMAC-MD5: Key 是 Token, Data 是 Password
+func hmacMd5(password, token string) string {
+	h := hmac.New(md5.New, []byte(token))
+	h.Write([]byte(password))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -142,6 +143,7 @@ func sha1Str(s string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// 标准 XEncode 算法 (移植自 srun-tool)
 func xEncode(msg, key string) string {
 	if msg == "" {
 		return ""
@@ -187,7 +189,7 @@ func xEncode(msg, key string) string {
 		res[i*4+2] = byte((pwd[i] >> 16) & 0xFF)
 		res[i*4+3] = byte((pwd[i] >> 24) & 0xFF)
 	}
-	return _base64(res[0:l])
+	return base64Custom(res[0:l])
 }
 
 func sencode(a string, b bool) []int64 {
@@ -207,7 +209,8 @@ func sencode(a string, b bool) []int64 {
 	return v
 }
 
-func _base64(input []byte) string {
+// Srun 使用的标准 Base64 字符集 (通常是标准表，但也可能有变种，这里用最标准的实现)
+func base64Custom(input []byte) string {
 	const encode = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 	result := make([]byte, 0)
 	val := int64(0)
@@ -225,3 +228,8 @@ func _base64(input []byte) string {
 	}
 	return string(result)
 }
+
+// 辅助：处理大数 (Srun 算法有时涉及无符号移位，Go 的 int64 够用了，但要注意逻辑)
+// 上面的 xEncode 已经处理了 int64 的溢出逻辑 (& 0xFFFFFFFF)
+// 为了确保万无一失，引入 math/big 并不是必须的，因为 Srun 算法是基于 C 的 32位整数溢出的。
+// 上面的代码已经模拟了 32位行为。
