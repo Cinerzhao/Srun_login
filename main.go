@@ -37,16 +37,25 @@ func main() {
 	}
 	fmt.Printf("Token: %s, IP: %s\n", token, ip)
 
-	// 2. 密码加密 (标准 HMAC-MD5)
+	// ================= 关键修改区域 =================
+	
+	// A. 计算 HMAC-MD5 (用于 URL 参数，每次都会变)
 	hmd5 := hmacMd5(*password, token)
 
+	// B. 计算 纯 MD5 (用于 Info 内部，永远不变)
+	pwdMd5 := md5Str(*password)
+
+	// ==============================================
+
 	// 3. 生成 Info (XEncode)
+	// [重点] JSON 里面放的是 pwdMd5 (纯MD5)，而不是 hmd5
 	infoJSON := fmt.Sprintf(`{"username":"%s","password":"%s","ip":"%s","acid":"%s","enc_ver":"srun_bx1"}`,
-		*username, hmd5, ip, *acid)
+		*username, pwdMd5, ip, *acid)
 	
 	info := "{SRBX1}" + xEncode(infoJSON, token)
 
 	// 4. 计算 Checksum
+	// 这里的 password 部分，必须使用 HMAC (hmd5)，因为它是跟 URL 参数对应的
 	chkStr := token + *username + token + hmd5 + token + *acid + token + ip + token + "200" + token + "1" + token + info
 	chksum := sha1Str(chkStr)
 
@@ -60,7 +69,7 @@ func main() {
 	params.Set("callback", callback)
 	params.Set("action", "login")
 	params.Set("username", *username)
-	params.Set("password", "{MD5}"+hmd5)
+	params.Set("password", "{MD5}"+hmd5) // URL 里放 HMAC
 	params.Set("ac_id", *acid)
 	params.Set("ip", ip)
 	params.Set("chksum", chksum)
@@ -126,9 +135,17 @@ func getChallenge(host, user string) (string, string) {
 	return "", ""
 }
 
+// HMAC-MD5
 func hmacMd5(password, token string) string {
 	h := hmac.New(md5.New, []byte(token))
 	h.Write([]byte(password))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// Pure MD5
+func md5Str(s string) string {
+	h := md5.New()
+	h.Write([]byte(s))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
