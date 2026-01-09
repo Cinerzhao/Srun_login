@@ -45,33 +45,29 @@ func main() {
 	}
 	fmt.Printf("Token: %s, IP: %s\n", token, ip)
 
-	// 2. 准备加密参数
-	// URL 参数用 HMAC-MD5 (带 Token)
+	// 2. 加密密码 (V1.18 标准: HMAC-MD5)
 	hmd5 := hmacMd5(*password, token)
-	// Info 内部用 纯 MD5 (不带 Token) <--- 关键修正
-	pwdMd5 := md5Str(*password)
 
 	// 3. 构造 Info JSON
+	// 修正：Info 内部也必须使用 HMAC-MD5 (与 URL 参数一致，但不带 {MD5} 前缀)
 	infoData := map[string]string{
 		"username": *username,
-		"password": pwdMd5, // 使用纯 MD5
+		"password": hmd5, 
 		"ip":       ip,
 		"acid":     *acid,
 		"enc_ver":  "srun_bx1",
 	}
 	infoJSON, _ := json.Marshal(infoData)
-	fmt.Println("Info JSON (Raw):", string(infoJSON)) // 调试打印
+	fmt.Println("Info JSON:", string(infoJSON))
 
-	// 4. 加密 Info
-	// 格式: {SRBX1} + xEncode + Base64(无padding)
+	// 4. 加密 Info (核心修复在 xEncode)
 	info := "{SRBX1}" + xEncode(string(infoJSON), token)
 
 	// 5. 计算 Checksum
-	// 顺序: token + username + token + hmd5 + token + acid + token + ip + token + n + token + type + token + info
 	chkStr := token + *username + token + hmd5 + token + *acid + token + ip + token + "200" + token + "1" + token + info
 	chksum := sha1Str(chkStr)
 
-	// 6. 构造 URL
+	// 6. 构造请求
 	loginUrl := fmt.Sprintf("http://%s/cgi-bin/srun_portal", *server)
 	timestamp := time.Now().UnixNano() / 1e6
 	callback := fmt.Sprintf("jQuery%d_%d", timestamp, timestamp-500)
@@ -95,7 +91,7 @@ func main() {
 	fullUrl := loginUrl + "?" + params.Encode()
 	fmt.Println("Sending login request...")
 
-	// 7. 发送请求
+	// 7. 发送
 	client := &http.Client{Timeout: 5 * time.Second}
 	req, _ := http.NewRequest("GET", fullUrl, nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -126,9 +122,7 @@ func getChallenge(server, username string) (string, string) {
 		server, ts, username, ts)
 	
 	resp, err := http.Get(u)
-	if err != nil {
-		return "", ""
-	}
+	if err != nil { return "", "" }
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	content := string(body)
@@ -150,19 +144,13 @@ func hmacMd5(password, token string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// 新增: 纯 MD5 计算
-func md5Str(s string) string {
-	h := md5.New()
-	h.Write([]byte(s))
-	return hex.EncodeToString(h.Sum(nil))
-}
-
 func sha1Str(s string) string {
 	h := sha1.New()
 	h.Write([]byte(s))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// xEncode 核心修复：添加括号解决 Go/JS 运算符优先级差异
 func xEncode(msg string, key string) string {
 	if msg == "" { return "" }
 	v := s(msg, true)
@@ -186,12 +174,15 @@ func xEncode(msg string, key string) string {
 		e := int((sum >> 2) & 3)
 		for p := 0; p < n; p++ {
 			y = v[p+1]
-			mx := (z>>5^y<<2) + (y>>3^z<<4) ^ (sum^y) + (k[(p&3)^e]^z)
+			// 核心修复：JS中 (A + B ^ C + D) 等价于 (A+B) ^ (C+D)
+			// Go中必须显式加括号，否则是 ((A+B)^C)+D
+			mx := ((z>>5 ^ y<<2) + (y>>3 ^ z<<4)) ^ ((sum ^ y) + (k[(p&3)^e] ^ z))
 			v[p] += mx
 			z = v[p]
 		}
 		y = v[0]
-		mx := (z>>5^y<<2) + (y>>3^z<<4) ^ (sum^y) + (k[(n&3)^e]^z)
+		// 核心修复：同上
+		mx := ((z>>5 ^ y<<2) + (y>>3 ^ z<<4)) ^ ((sum ^ y) + (k[(n&3)^e] ^ z))
 		v[n] += mx
 		z = v[n]
 		q--
@@ -230,7 +221,7 @@ func l(a []uint32, b bool) []byte {
 	return res
 }
 
-// 经过修复的 Base64: 无Padding, 忽略越界
+// base64Srun: 保持 V3 的修复 (无Padding, 越界忽略)
 func base64Srun(input []byte) string {
 	alpha := srunAlphabet
 	alphaLen := len(alpha)
