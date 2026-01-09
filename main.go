@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -53,12 +52,12 @@ func main() {
 	// 5. Send Login Request
 	loginUrl := fmt.Sprintf("http://%s/cgi-bin/srun_portal", *server)
 	
-	// 生成一个伪造的 callback 名称 (比如 jQuery123456...)
+	// 生成伪造 callback
 	timestamp := time.Now().UnixNano() / 1e6
 	callback := "jQuery" + strconv.FormatInt(timestamp, 10) + "_" + strconv.FormatInt(timestamp-500, 10)
 
 	params := url.Values{}
-	params.Set("callback", callback) // [关键] 加上 callback
+	params.Set("callback", callback)
 	params.Set("action", "login")
 	params.Set("username", *username)
 	params.Set("password", "{MD5}"+hmd5)
@@ -71,12 +70,12 @@ func main() {
 	params.Set("os", "Windows 10")
 	params.Set("name", "Windows")
 	params.Set("double_stack", "0")
-	params.Set("_", strconv.FormatInt(timestamp, 10)) // [关键] 加上时间戳
+	params.Set("_", strconv.FormatInt(timestamp, 10))
 
 	fullUrl := loginUrl + "?" + params.Encode()
 	fmt.Println("Sending request...")
 
-	// [关键] 使用 http.NewRequest 以便设置 User-Agent
+	// 使用 http.NewRequest 设置 User-Agent
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", fullUrl, nil)
 	if err != nil {
@@ -84,7 +83,7 @@ func main() {
 		return
 	}
 
-	// 伪装成 Chrome 浏览器
+	// 伪装成 Chrome
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 	
 	resp, err := client.Do(req)
@@ -95,14 +94,12 @@ func main() {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	
-	// 输出结果
 	fmt.Println("Response:", string(body))
 }
 
 // === Helper Functions ===
 
 func getChallenge(host, user string) (string, string) {
-	// 也给 get_challenge 加上伪装
 	timestamp := time.Now().UnixNano() / 1e6
 	u := fmt.Sprintf("http://%s/cgi-bin/get_challenge?callback=jsonp&username=%s&ip=0.0.0.0&_=%d",
 		host, user, timestamp)
