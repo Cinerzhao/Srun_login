@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/hmac"
 	"crypto/md5"
 	"crypto/sha1"
 	"encoding/hex"
@@ -19,7 +18,7 @@ var (
 	username = flag.String("u", "", "Username")
 	password = flag.String("p", "", "Password")
 	server   = flag.String("s", "", "Server IP")
-	acid     = flag.String("ac", "23", "AC ID") // 默认为 23
+	acid     = flag.String("ac", "23", "AC ID")
 )
 
 func main() {
@@ -37,22 +36,25 @@ func main() {
 	}
 	fmt.Printf("Token: %s, IP: %s\n", token, ip)
 
-	// 2. Encrypt Password
-	hmd5 := hmacMd5(token, *password)
+	// 2. Encrypt Password (修正：使用纯 MD5，不加盐)
+	// 之前的 hmacMd5 是错误的，你们学校只用 md5
+	pwdMd5 := md5Str(*password)
 
-	// 3. Generate Info
+	// 3. Generate Info (XEncode)
+	// 注意：JSON 里的 password 字段并没有 {MD5} 前缀，只是 hex 字符串
 	infoJSON := fmt.Sprintf(`{"username":"%s","password":"%s","ip":"%s","acid":"%s","enc_ver":"srun_bx1"}`,
-		*username, *password, ip, *acid)
+		*username, pwdMd5, ip, *acid)
+	
 	info := "{SRBX1}" + xEncode(infoJSON, token)
 
-	// 4. Calculate Checksum
-	chkStr := token + *username + token + hmd5 + token + *acid + token + ip + token + "200" + token + "1" + token + info
+	// 4. Calculate Checksum (SHA1)
+	// 拼接字符串用于校验
+	chkStr := token + *username + token + pwdMd5 + token + *acid + token + ip + token + "200" + token + "1" + token + info
 	chksum := sha1Str(chkStr)
 
 	// 5. Send Login Request
 	loginUrl := fmt.Sprintf("http://%s/cgi-bin/srun_portal", *server)
 	
-	// 生成伪造 callback
 	timestamp := time.Now().UnixNano() / 1e6
 	callback := "jQuery" + strconv.FormatInt(timestamp, 10) + "_" + strconv.FormatInt(timestamp-500, 10)
 
@@ -60,7 +62,8 @@ func main() {
 	params.Set("callback", callback)
 	params.Set("action", "login")
 	params.Set("username", *username)
-	params.Set("password", "{MD5}"+hmd5)
+	// URL 里的 password 需要带上 {MD5} 前缀
+	params.Set("password", "{MD5}"+pwdMd5)
 	params.Set("ac_id", *acid)
 	params.Set("ip", ip)
 	params.Set("chksum", chksum)
@@ -75,7 +78,6 @@ func main() {
 	fullUrl := loginUrl + "?" + params.Encode()
 	fmt.Println("Sending request...")
 
-	// 使用 http.NewRequest 设置 User-Agent
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", fullUrl, nil)
 	if err != nil {
@@ -83,7 +85,6 @@ func main() {
 		return
 	}
 
-	// 伪装成 Chrome
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 	
 	resp, err := client.Do(req)
@@ -128,9 +129,10 @@ func getChallenge(host, user string) (string, string) {
 	return "", ""
 }
 
-func hmacMd5(tokenStr, passwordStr string) string {
-	h := hmac.New(md5.New, []byte(tokenStr))
-	h.Write([]byte(passwordStr))
+// 修正：改为纯 MD5 计算
+func md5Str(s string) string {
+	h := md5.New()
+	h.Write([]byte(s))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
