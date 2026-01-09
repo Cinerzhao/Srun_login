@@ -1,7 +1,7 @@
 name: Build Srun Login Tool
 
 on:
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:
 
 jobs:
   build:
@@ -17,20 +17,16 @@ jobs:
 
       - name: Build Srun Tool
         run: |
-          # 1. 下载开源的深澜登录工具源码 (感谢 xiaoqidun 大佬)
-          git clone https://github.com/xiaoqidun/srun-tool.git
-          cd srun-tool
-          
-          # 2. 设置编译目标为 K2P 的架构 (MIPS Little Endian)
+          # 1. 设置编译目标为 K2P 的架构
           export GOOS=linux
           export GOARCH=mipsle
           export GOMIPS=softfloat
           
-          # 3. 编译
-          go build -ldflags "-s -w" -o srun_login
+          # 2. 编译当前目录下的 main.go
+          go build -ldflags "-s -w" -o srun_login main.go
           
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: srun_login_k2p
-          path: srun-tool/srun_login
+          path: srun_login
