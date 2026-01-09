@@ -4,8 +4,8 @@ import (
 	"crypto/hmac"
 	"crypto/md5"
 	"crypto/sha1"
+	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -25,9 +25,6 @@ var (
 	acid     = flag.String("ac", "23", "AC ID")
 )
 
-// 深澜专用 Base64 字典
-const srunAlphabet = "LVoJPiCN2R8G90yg+hmFzDj6S5E4Wl1eMMcXkT7u_nApqrbsB3IdhkaQZtxEwY"
-
 func main() {
 	flag.Parse()
 	if *username == "" || *password == "" || *server == "" {
@@ -45,29 +42,28 @@ func main() {
 	}
 	fmt.Printf("Token: %s, IP: %s\n", token, ip)
 
-	// 2. 加密密码 (V1.18 标准: HMAC-MD5)
+	// 2. 密码加密 (HMAC-MD5)
 	hmd5 := hmacMd5(*password, token)
 
 	// 3. 构造 Info JSON
-	// 修正：Info 内部也必须使用 HMAC-MD5 (与 URL 参数一致，但不带 {MD5} 前缀)
-	infoData := map[string]string{
-		"username": *username,
-		"password": hmd5, 
-		"ip":       ip,
-		"acid":     *acid,
-		"enc_ver":  "srun_bx1",
-	}
-	infoJSON, _ := json.Marshal(infoData)
-	fmt.Println("Info JSON:", string(infoJSON))
+	// 严格按照抓包顺序: username -> password -> ip -> acid -> enc_ver
+	// password 字段使用 HMAC-MD5 (不带 {MD5} 前缀)
+	infoJSON := fmt.Sprintf(`{"username":"%s","password":"%s","ip":"%s","acid":"%s","enc_ver":"srun_bx1"}`,
+		*username, hmd5, ip, *acid)
+	
+	fmt.Println("Info JSON:", infoJSON)
 
-	// 4. 加密 Info (核心修复在 xEncode)
-	info := "{SRBX1}" + xEncode(string(infoJSON), token)
+	// 4. 加密 Info
+	// 使用 xEncode + 标准 Base64
+	// 格式: {SRBX1} + 密文
+	info := "{SRBX1}" + xEncode(infoJSON, token)
 
 	// 5. 计算 Checksum
+	// 顺序: token + username + token + hmd5 + token + acid + token + ip + token + n + token + type + token + info
 	chkStr := token + *username + token + hmd5 + token + *acid + token + ip + token + "200" + token + "1" + token + info
 	chksum := sha1Str(chkStr)
 
-	// 6. 构造请求
+	// 6. 构造 URL
 	loginUrl := fmt.Sprintf("http://%s/cgi-bin/srun_portal", *server)
 	timestamp := time.Now().UnixNano() / 1e6
 	callback := fmt.Sprintf("jQuery%d_%d", timestamp, timestamp-500)
@@ -150,7 +146,7 @@ func sha1Str(s string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// xEncode 核心修复：添加括号解决 Go/JS 运算符优先级差异
+// xEncode + 标准 Base64
 func xEncode(msg string, key string) string {
 	if msg == "" { return "" }
 	v := s(msg, true)
@@ -174,20 +170,22 @@ func xEncode(msg string, key string) string {
 		e := int((sum >> 2) & 3)
 		for p := 0; p < n; p++ {
 			y = v[p+1]
-			// 核心修复：JS中 (A + B ^ C + D) 等价于 (A+B) ^ (C+D)
-			// Go中必须显式加括号，否则是 ((A+B)^C)+D
+			// Go/JS 运算优先级修复
 			mx := ((z>>5 ^ y<<2) + (y>>3 ^ z<<4)) ^ ((sum ^ y) + (k[(p&3)^e] ^ z))
 			v[p] += mx
 			z = v[p]
 		}
 		y = v[0]
-		// 核心修复：同上
 		mx := ((z>>5 ^ y<<2) + (y>>3 ^ z<<4)) ^ ((sum ^ y) + (k[(n&3)^e] ^ z))
 		v[n] += mx
 		z = v[n]
 		q--
 	}
-	return base64Srun(l(v, false))
+	
+	// 转回字节数组
+	byteData := l(v, false)
+	// 使用标准 Base64 编码
+	return base64.StdEncoding.EncodeToString(byteData)
 }
 
 func s(a string, b bool) []uint32 {
@@ -219,38 +217,4 @@ func l(a []uint32, b bool) []byte {
 		res[i] = byte(a[i>>2] >> ((i & 3) * 8) & 0xff)
 	}
 	return res
-}
-
-// base64Srun: 保持 V3 的修复 (无Padding, 越界忽略)
-func base64Srun(input []byte) string {
-	alpha := srunAlphabet
-	alphaLen := len(alpha)
-	var sb strings.Builder
-	sb.Grow((len(input) + 2) / 3 * 4)
-
-	si := 0
-	n := (len(input) / 3) * 3
-	safeWrite := func(idx uint) {
-		if int(idx) < alphaLen { sb.WriteByte(alpha[idx]) }
-	}
-
-	for si < n {
-		val := uint(input[si+0])<<16 | uint(input[si+1])<<8 | uint(input[si+2])
-		safeWrite(val >> 18 & 0x3F)
-		safeWrite(val >> 12 & 0x3F)
-		safeWrite(val >> 6 & 0x3F)
-		safeWrite(val & 0x3F)
-		si += 3
-	}
-	remain := len(input) - si
-	if remain == 0 { return sb.String() }
-
-	val := uint(input[si+0]) << 16
-	if remain == 2 { val |= uint(input[si+1]) << 8 }
-
-	safeWrite(val >> 18 & 0x3F)
-	safeWrite(val >> 12 & 0x3F)
-	if remain == 2 { safeWrite(val >> 6 & 0x3F) }
-	
-	return sb.String()
 }
