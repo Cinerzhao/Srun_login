@@ -18,12 +18,14 @@ var (
 	username = flag.String("u", "", "Username")
 	password = flag.String("p", "", "Password")
 	server   = flag.String("s", "", "Server IP")
+	// 新增 ac_id 参数，默认为 23 (根据你的抓包结果)
+	acid     = flag.String("ac", "23", "AC ID")
 )
 
 func main() {
 	flag.Parse()
 	if *username == "" || *password == "" || *server == "" {
-		fmt.Println("Usage: -u <user> -p <pass> -s <server_ip>")
+		fmt.Println("Usage: -u <user> -p <pass> -s <server_ip> [-ac <ac_id>]")
 		return
 	}
 
@@ -36,18 +38,18 @@ func main() {
 	fmt.Printf("Token: %s, IP: %s\n", token, ip)
 
 	// 2. Encrypt Password (HmacMD5)
-	// 注意：这里要把 *password (指针) 转为字符串传进去
 	hmd5 := hmacMd5(token, *password)
 
 	// 3. Generate Info (XEncode)
-	// 手动拼接 JSON 字符串，避免引入 encoding/json 包导致未使用报错
+	// 修正：使用 flag 传入的 ac_id (23)
 	infoJSON := fmt.Sprintf(`{"username":"%s","password":"%s","ip":"%s","acid":"%s","enc_ver":"srun_bx1"}`,
-		*username, *password, ip, "1")
+		*username, *password, ip, *acid)
 	
 	info := "{SRBX1}" + xEncode(infoJSON, token)
 
 	// 4. Calculate Checksum (SHA1)
-	chkStr := token + *username + token + hmd5 + token + "1" + token + ip + token + "200" + token + "1" + token + info
+	// 修正：这里拼接字符串时，ac_id 必须与上面保持一致，否则 checksum 校验失败
+	chkStr := token + *username + token + hmd5 + token + *acid + token + ip + token + "200" + token + "1" + token + info
 	chksum := sha1Str(chkStr)
 
 	// 5. Send Login Request
@@ -56,7 +58,7 @@ func main() {
 	params.Set("action", "login")
 	params.Set("username", *username)
 	params.Set("password", "{MD5}"+hmd5)
-	params.Set("ac_id", "1")
+	params.Set("ac_id", *acid) // 修正：使用 23
 	params.Set("ip", ip)
 	params.Set("chksum", chksum)
 	params.Set("info", info)
@@ -104,7 +106,6 @@ func getChallenge(host, user string) (string, string) {
 	return "", ""
 }
 
-// 修复：明确参数名，不依赖全局变量
 func hmacMd5(tokenStr, passwordStr string) string {
 	h := hmac.New(md5.New, []byte(tokenStr))
 	h.Write([]byte(passwordStr))
