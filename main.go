@@ -42,28 +42,28 @@ func main() {
 	}
 	fmt.Printf("Token: %s, IP: %s\n", token, ip)
 
-	// 2. 密码加密 (HMAC-MD5)
+	// 2. 准备密码
+	// URL 参数用: HMAC-MD5 (防重放)
 	hmd5 := hmacMd5(*password, token)
+	// Info 内部用: 纯 MD5 (身份验证) <--- 修正回 V3 逻辑
+	pwdMd5 := md5Str(*password)
 
 	// 3. 构造 Info JSON
-	// 严格按照抓包顺序: username -> password -> ip -> acid -> enc_ver
-	// password 字段使用 HMAC-MD5 (不带 {MD5} 前缀)
+	// 严格顺序: username -> password -> ip -> acid -> enc_ver
+	// 这里的 password 必须是纯 MD5
 	infoJSON := fmt.Sprintf(`{"username":"%s","password":"%s","ip":"%s","acid":"%s","enc_ver":"srun_bx1"}`,
-		*username, hmd5, ip, *acid)
+		*username, pwdMd5, ip, *acid)
 	
 	fmt.Println("Info JSON:", infoJSON)
 
-	// 4. 加密 Info
-	// 使用 xEncode + 标准 Base64
-	// 格式: {SRBX1} + 密文
+	// 4. 加密 Info (xEncode + 标准 Base64)
 	info := "{SRBX1}" + xEncode(infoJSON, token)
 
 	// 5. 计算 Checksum
-	// 顺序: token + username + token + hmd5 + token + acid + token + ip + token + n + token + type + token + info
 	chkStr := token + *username + token + hmd5 + token + *acid + token + ip + token + "200" + token + "1" + token + info
 	chksum := sha1Str(chkStr)
 
-	// 6. 构造 URL
+	// 6. 构造请求
 	loginUrl := fmt.Sprintf("http://%s/cgi-bin/srun_portal", *server)
 	timestamp := time.Now().UnixNano() / 1e6
 	callback := fmt.Sprintf("jQuery%d_%d", timestamp, timestamp-500)
@@ -140,13 +140,19 @@ func hmacMd5(password, token string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+func md5Str(s string) string {
+	h := md5.New()
+	h.Write([]byte(s))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 func sha1Str(s string) string {
 	h := sha1.New()
 	h.Write([]byte(s))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// xEncode + 标准 Base64
+// xEncode: 包含数学修复 + 标准Base64
 func xEncode(msg string, key string) string {
 	if msg == "" { return "" }
 	v := s(msg, true)
@@ -170,7 +176,6 @@ func xEncode(msg string, key string) string {
 		e := int((sum >> 2) & 3)
 		for p := 0; p < n; p++ {
 			y = v[p+1]
-			// Go/JS 运算优先级修复
 			mx := ((z>>5 ^ y<<2) + (y>>3 ^ z<<4)) ^ ((sum ^ y) + (k[(p&3)^e] ^ z))
 			v[p] += mx
 			z = v[p]
@@ -182,9 +187,8 @@ func xEncode(msg string, key string) string {
 		q--
 	}
 	
-	// 转回字节数组
 	byteData := l(v, false)
-	// 使用标准 Base64 编码
+	// 使用标准 Base64 编码 (根据F12数据确认)
 	return base64.StdEncoding.EncodeToString(byteData)
 }
 
